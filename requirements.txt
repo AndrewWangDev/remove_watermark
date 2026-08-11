@@ -1,3 +1,7 @@
 opencv-python
 numpy
-pyinstaller
+opencv-python
+scipy
+PyWavelets
+customtkinter
+pillow

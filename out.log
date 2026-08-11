@@ -1,0 +1,2 @@
+C:\Users\LinYu\Downloads\Watermark\remove_watermark\src\main.py:11: DeprecationWarning: app() is deprecated since version 0.80.0. Use run() instead.
+  ft.app(target=main)

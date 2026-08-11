@@ -1,11 +1,11 @@
-import sys
-import os
+import customtkinter as ctk
+from ui.main_view import WatermarkApp
 
-# Ensure src directory is in path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-
-from ui.gui import WatermarkApp
-
-if __name__ == "__main__":
+def main():
+    ctk.set_appearance_mode("Dark")
+    ctk.set_default_color_theme("blue")
     app = WatermarkApp()
     app.mainloop()
+
+if __name__ == "__main__":
+    main()
