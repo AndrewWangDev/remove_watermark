@@ -26,20 +26,37 @@ def process_lsb(img_channel, mode, action="clean"):
         if h < 2 or w < 2:
             return {"detected": False, "score": 0.0}
 
-        # Calculate spatial transition probability / difference energy
-        # Natural images exhibit spatial correlation in LSB, diff_rate is typically 0.25 ~ 0.44
-        # Pseudo-random / encrypted watermark payloads exhibit Bernoulli white noise (diff_rate -> 0.500)
+        # Check spatial transition probability / difference energy globally and in local blocks
+        # Natural images exhibit spatial correlation in LSB (diff_rate is typically 0.25 ~ 0.44)
+        # Pseudo-random / encrypted payloads exhibit Bernoulli white noise (diff_rate -> 0.500)
         diff_h = np.mean(np.abs(lsb_plane[:, :-1] - lsb_plane[:, 1:]))
         diff_v = np.mean(np.abs(lsb_plane[:-1, :] - lsb_plane[1:, :]))
         diff_rate = float((diff_h + diff_v) / 2.0)
         mean_bit = float(np.mean(lsb_plane))
         
-        # An image with payload has both diff_rate close to 0.5 and balanced 0/1 ratio
-        is_random_payload = (diff_rate > 0.485) and (abs(mean_bit - 0.5) < 0.02)
+        # Check local blocks (64x64) to prevent sparse/localized watermark payloads from being diluted
+        max_local_diff = diff_rate
+        if h >= 64 and w >= 64:
+            step = 64
+            local_diffs = []
+            for r in range(0, h - step + 1, step):
+                for c in range(0, w - step + 1, step):
+                    blk = lsb_plane[r:r+step, c:c+step]
+                    # Only consider blocks with balanced bit ratio
+                    if abs(np.mean(blk) - 0.5) < 0.05:
+                        dh = np.mean(np.abs(blk[:, :-1] - blk[:, 1:]))
+                        dv = np.mean(np.abs(blk[:-1, :] - blk[1:, :]))
+                        local_diffs.append((dh + dv) / 2.0)
+            if local_diffs:
+                max_local_diff = float(np.max(local_diffs))
         
-        # Cleaned images (LSB cleared) have diff_rate == 0
-        detected = bool(is_random_payload)
-        return {"detected": detected, "score": float(round(diff_rate, 4))}
+        # Global payload or strong local payload
+        is_global_payload = (diff_rate > 0.485) and (abs(mean_bit - 0.5) < 0.02)
+        is_local_payload = (max_local_diff > 0.492)
+        
+        detected = bool(is_global_payload or is_local_payload)
+        score_val = max(diff_rate, max_local_diff)
+        return {"detected": detected, "score": float(round(score_val, 4))}
         
     if action == "clean":
         mask = 255 - ((1 << bits_to_clear) - 1)
@@ -99,7 +116,16 @@ def process_fft(img_channel, mode, action="clean"):
         dilated_spikes = cv2.dilate(spikes.astype(np.uint8), kernel)
         
         # Enforce conjugate symmetry F(-u, -v) = F*(u, v) around center to avoid spatial phase distortion
-        dilated_symmetric = np.maximum(dilated_spikes, np.rot90(dilated_spikes, 2))
+        # In even-dimension arrays, np.fft.fftshift DC center is at (rows//2, cols//2),
+        # while np.rot90 rotates around ((rows-1)/2, (cols-1)/2).
+        # We apply np.roll by 1 for even dimensions to align exactly with DC frequency center!
+        shift_r = 1 if rows % 2 == 0 else 0
+        shift_c = 1 if cols % 2 == 0 else 0
+        rotated_spikes = np.rot90(dilated_spikes, 2)
+        if shift_r != 0 or shift_c != 0:
+            rotated_spikes = np.roll(rotated_spikes, (shift_r, shift_c), axis=(0, 1))
+
+        dilated_symmetric = np.maximum(dilated_spikes, rotated_spikes)
         mask = 1.0 - dilated_symmetric.astype(np.float32)
         
         # Smooth mask with Gaussian blur to prevent Gibbs ringing artifacts
@@ -115,6 +141,10 @@ def process_fft(img_channel, mode, action="clean"):
 
 def process_dct(img_channel, mode, action="clean"):
     rows, cols = img_channel.shape
+    if rows < 8 or cols < 8:
+        if action == "detect":
+            return {"detected": False, "score": 0.0}
+        return img_channel.copy()
     
     pad_rows = (8 - rows % 8) % 8
     pad_cols = (8 - cols % 8) % 8

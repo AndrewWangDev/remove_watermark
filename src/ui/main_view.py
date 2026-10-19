@@ -545,17 +545,31 @@ class WatermarkApp(ctk.CTk):
             self.log_box.insert("end", f"{m:<10}| ")
         self.log_box.insert("end", "\n")
 
-        # Helper to determine level
-        def get_lvl(score, detected):
-            if not detected: return "success", "Clean"
-            if score > 50 or score > 0.485: return "error", "Found"
-            return "warning", "Suspicious"
+        # Multi-tier grading: Clean (green) / Suspicious (yellow) / Found (red)
+        def get_lvl(method, score, detected):
+            if method == "LSB":
+                if score >= 0.490: return "error", "Found"
+                if score >= 0.460 or detected: return "warning", "Suspicious"
+                return "success", "Clean"
+            elif method == "FFT":
+                if score >= 45.0: return "error", "Found"
+                if score >= 18.0 or detected: return "warning", "Suspicious"
+                return "success", "Clean"
+            elif method == "DCT":
+                if score >= 1800.0: return "error", "Found"
+                if score >= 900.0 or detected: return "warning", "Suspicious"
+                return "success", "Clean"
+            elif method == "DWT":
+                if score >= 250.0: return "error", "Found"
+                if score >= 80.0 or detected: return "warning", "Suspicious"
+                return "success", "Clean"
+            return ("error", "Found") if detected else ("success", "Clean")
 
         # Row 2: Scores
         self.log_box.insert("end", f"{'Score:':<12}| ")
         for m in methods:
             score = results[m]["score"]
-            lvl, _ = get_lvl(score, results[m]["detected"])
+            lvl, _ = get_lvl(m, score, results[m]["detected"])
             self.log_box.insert("end", f"{score:<10.2f}", lvl)
             self.log_box.insert("end", "| ")
         self.log_box.insert("end", "\n")
@@ -563,11 +577,14 @@ class WatermarkApp(ctk.CTk):
         # Row 3: Result Label
         self.log_box.insert("end", f"{'Result:':<12}| ")
         found_methods = []
+        suspicious_methods = []
         for m in methods:
             score = results[m]["score"]
-            lvl, label = get_lvl(score, results[m]["detected"])
-            if label != "Clean":
+            lvl, label = get_lvl(m, score, results[m]["detected"])
+            if label == "Found":
                 found_methods.append(m)
+            elif label == "Suspicious":
+                suspicious_methods.append(m)
             self.log_box.insert("end", f"{label:<10}", lvl)
             self.log_box.insert("end", "| ")
         self.log_box.insert("end", "\n")
@@ -582,8 +599,10 @@ class WatermarkApp(ctk.CTk):
             total_weight += w
             if m in found_methods:
                 earned_weight += w
+            elif m in suspicious_methods:
+                earned_weight += w * 0.5
                 
-        if total_weight > 0 and found_methods:
+        if total_weight > 0 and (found_methods or suspicious_methods):
             prob = int((earned_weight / total_weight) * 95)
             prob = min(prob, 99)
         else:
@@ -595,7 +614,7 @@ class WatermarkApp(ctk.CTk):
         elif prob >= 50:
             kw = "The image is likely watermarked"
             color = "warning"
-        elif prob >= 30:
+        elif prob >= 25:
             kw = "The image is possibly watermarked"
             color = "warning"
         elif prob > 0:
@@ -608,8 +627,13 @@ class WatermarkApp(ctk.CTk):
         self.log_box.insert("end", "Conclusion: ")
         self.log_box.insert("end", f"{kw} ({prob}% probability).\n", color)
         
-        if found_methods:
-            self.log_box.insert("end", " " * 12 + f"Watermark components detected in: {', '.join(found_methods)}.\n", color)
+        if found_methods or suspicious_methods:
+            details = []
+            if found_methods:
+                details.append(f"Found in {', '.join(found_methods)}")
+            if suspicious_methods:
+                details.append(f"Suspicious in {', '.join(suspicious_methods)}")
+            self.log_box.insert("end", " " * 12 + f"Watermark signatures: {'; '.join(details)}.\n", color)
         else:
             self.log_box.insert("end", " " * 12 + "No significant watermark signatures detected.\n", color)
 

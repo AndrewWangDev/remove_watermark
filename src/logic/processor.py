@@ -121,7 +121,13 @@ class WatermarkProcessor:
                     continue
 
                 if action == "detect":
-                    results[m_name] = fn(current_channel, aggressiveness, "detect")
+                    det_res = fn(current_channel, aggressiveness, "detect")
+                    if m_name == "LSB" and alpha_channel is not None:
+                        alpha_res = fn(alpha_channel, aggressiveness, "detect")
+                        if alpha_res.get("detected"):
+                            det_res["detected"] = True
+                            det_res["score"] = max(det_res.get("score", 0.0), alpha_res.get("score", 0.0))
+                    results[m_name] = det_res
                 else:
                     current_channel = fn(current_channel, aggressiveness, "clean")
                     if current_channel is None:
@@ -142,13 +148,25 @@ class WatermarkProcessor:
 
             _report(85, "Reconstructing channels...")
             if color_preserve:
+                # Neutralize chrominance steganography while preserving visual color fidelity
+                if aggressiveness == "Aggressive":
+                    cr_channel = cv2.GaussianBlur(cr_channel, (3, 3), 0)
+                    cb_channel = cv2.GaussianBlur(cb_channel, (3, 3), 0)
+                elif aggressiveness == "Balanced":
+                    cr_channel = cv2.medianBlur(cr_channel, 3)
+                    cb_channel = cv2.medianBlur(cb_channel, 3)
+
                 merged = cv2.merge([current_channel, cr_channel, cb_channel])
                 result_img = cv2.cvtColor(merged, cv2.COLOR_YCrCb2BGR)
             else:
                 result_img = current_channel
 
-            # Re-attach Alpha channel if preserving original alpha
+            # Clean and re-attach Alpha channel if preserving original alpha
             if alpha_channel is not None and not force_jpeg:
+                if "LSB" in methods:
+                    # Clean steganographic payloads hiding in the transparent alpha bit-planes
+                    alpha_channel = process_lsb(alpha_channel, aggressiveness, "clean")
+
                 if len(result_img.shape) == 2:
                     result_img = cv2.cvtColor(result_img, cv2.COLOR_GRAY2BGR)
                 result_img = cv2.merge([result_img[:, :, 0], result_img[:, :, 1], result_img[:, :, 2], alpha_channel])
@@ -163,13 +181,18 @@ class WatermarkProcessor:
                 if h - crop_t - crop_b > 10 and w - crop_l - crop_r > 10:
                     result_img = result_img[crop_t:h-crop_b, crop_l:w-crop_r]
 
-            out_path_used = output_path
+            out_path_used = output_path.strip() if output_path else ""
             if not out_path_used or out_path_used.startswith("Default"):
                 dir_name, file_name = os.path.split(image_path)
                 out_path_used = os.path.join(dir_name, "cleaned_" + file_name)
-            elif os.path.isdir(out_path_used):
-                file_name = os.path.basename(image_path)
-                out_path_used = os.path.join(out_path_used, "cleaned_" + file_name)
+            else:
+                _, ext = os.path.splitext(out_path_used)
+                # If target directory already exists, has no extension, or ends with slash -> treat as folder
+                is_dir_target = os.path.isdir(out_path_used) or (not ext) or out_path_used.endswith(("/", "\\"))
+                if is_dir_target:
+                    os.makedirs(out_path_used, exist_ok=True)
+                    file_name = os.path.basename(image_path)
+                    out_path_used = os.path.join(out_path_used, "cleaned_" + file_name)
 
             if force_jpeg:
                 base, _ = os.path.splitext(out_path_used)
