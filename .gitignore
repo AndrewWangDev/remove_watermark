@@ -2,3 +2,6 @@
 /dist/
 *.pyc
 __pycache__/
+*.log
+out.log
+build_helpers/

@@ -26,7 +26,6 @@ class WatermarkApp(ctk.CTk):
             pass
         
         try:
-            import os
             ico_path = os.path.join(os.path.dirname(__file__), "..", "..", "logo.ico")
             if os.path.exists(ico_path):
                 self.after(200, lambda: self.iconbitmap(ico_path))
@@ -49,9 +48,10 @@ class WatermarkApp(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(4, weight=1)
 
-        # Global Config State
+        # Global Config & Task State
         self.hide_slow_warning = False
         self.cancel_flag = False
+        self.is_processing = False
 
         self._build_ui()
         self._redirect_stdout()
@@ -149,16 +149,31 @@ class WatermarkApp(ctk.CTk):
         self.cb_force_jpeg = ctk.CTkSwitch(privacy_frame, text="Force JPEG")
         self.cb_force_jpeg.pack(side="left", padx=(0, 30))
 
-        # Action Buttons
+        # Action Buttons (Saved as instance variables for debouncing & disabling)
         actions_frame = ctk.CTkFrame(self, fg_color="transparent")
         actions_frame.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
         actions_frame.grid_columnconfigure((0, 1), weight=1)
 
-        ctk.CTkButton(actions_frame, text="Detect Watermarks", height=40, command=lambda: self._trigger_action("detect")).grid(row=0, column=0, padx=5, sticky="ew")
-        ctk.CTkButton(actions_frame, text="Clean & Save", height=40, fg_color="#2FA572", hover_color="#1F7A50", command=lambda: self._trigger_action("clean")).grid(row=0, column=1, padx=5, sticky="ew")
+        self.btn_detect = ctk.CTkButton(
+            actions_frame, 
+            text="Detect Watermarks", 
+            height=40, 
+            command=lambda: self._trigger_action("detect")
+        )
+        self.btn_detect.grid(row=0, column=0, padx=5, sticky="ew")
+
+        self.btn_clean = ctk.CTkButton(
+            actions_frame, 
+            text="Clean & Save", 
+            height=40, 
+            fg_color="#2FA572", 
+            hover_color="#1F7A50", 
+            command=lambda: self._trigger_action("clean")
+        )
+        self.btn_clean.grid(row=0, column=1, padx=5, sticky="ew")
 
         # 3. Log Output Area
-        log_frame = ctk.CTkFrame(self, fg_color="#1E1E1E") # Match terminal background
+        log_frame = ctk.CTkFrame(self, fg_color="#1E1E1E")
         log_frame.grid(row=4, column=0, padx=20, pady=(0, 20), sticky="nsew")
         log_frame.grid_rowconfigure(0, weight=1)
         log_frame.grid_columnconfigure(0, weight=1)
@@ -169,8 +184,8 @@ class WatermarkApp(ctk.CTk):
             state="disabled", 
             wrap="word", 
             font=ctk.CTkFont(family="Consolas", size=13),
-            fg_color="#1E1E1E", # Terminal background
-            text_color="#CCCCCC" # Default terminal text
+            fg_color="#1E1E1E",
+            text_color="#CCCCCC"
         )
         self.log_box.grid(row=0, column=0, padx=5, pady=(5, 0), sticky="nsew")
         
@@ -186,23 +201,26 @@ class WatermarkApp(ctk.CTk):
 
         # Configure colorful tags
         self.log_box.tag_config("timestamp", foreground="#888888")
-        self.log_box.tag_config("info", foreground="#56B6C2") # Cyan
-        self.log_box.tag_config("success", foreground="#98C379") # Green
-        self.log_box.tag_config("error", foreground="#E06C75") # Red
-        self.log_box.tag_config("warning", foreground="#E5C07B") # Yellow
-        self.log_box.tag_config("highlight", foreground="#C678DD") # Purple
+        self.log_box.tag_config("info", foreground="#56B6C2")
+        self.log_box.tag_config("success", foreground="#98C379")
+        self.log_box.tag_config("error", foreground="#E06C75")
+        self.log_box.tag_config("warning", foreground="#E5C07B")
+        self.log_box.tag_config("highlight", foreground="#C678DD")
 
         self.log("System initialized. Ready.", level="info")
 
     def log(self, msg: str, level: str = "normal"):
+        """Thread-safe logging wrapper that dispatches to main Tkinter thread."""
+        self.after(0, self._append_log, msg, level)
+
+    def _append_log(self, msg: str, level: str = "normal"):
         self.log_box.configure(state="normal")
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         
-        # Auto-detect level if not explicitly provided
         if level == "normal":
             if "Error" in msg or "Failed" in msg:
                 level = "error"
-            elif "Successfully" in msg:
+            elif "Successfully" in msg or "cleaned and saved" in msg:
                 level = "success"
             elif "Found" in msg and "Not" not in msg:
                 level = "warning"
@@ -222,16 +240,7 @@ class WatermarkApp(ctk.CTk):
         self.log_box.configure(state="disabled")
 
     def _redirect_stdout(self):
-        class StdoutRedirector:
-            def __init__(self, log_func):
-                self.log_func = log_func
-            def write(self, string):
-                if string.strip():
-                    self.log_func(string.strip())
-            def flush(self):
-                pass
-        # Commented out so terminal stdout isn't fully suppressed, but we could do it.
-        # sys.stdout = StdoutRedirector(self.log)
+        pass
 
     def _show_about_dialog(self):
         about = ctk.CTkToplevel(self)
@@ -240,7 +249,6 @@ class WatermarkApp(ctk.CTk):
         about.geometry("600x380")
         about.transient(self)
         
-        # Center the about dialog over the main window
         about.update_idletasks()
         x = self.winfo_rootx() + (self.winfo_width() // 2) - (600 // 2)
         y = self.winfo_rooty() + (self.winfo_height() // 2) - (380 // 2)
@@ -249,10 +257,22 @@ class WatermarkApp(ctk.CTk):
         main_frame = ctk.CTkFrame(about, border_width=2, border_color="#58a6ff", corner_radius=10)
         main_frame.pack(fill="both", expand=True)
         
-        def on_main_click(event):
+        # Safe close handler that always unbinds main window listener
+        bind_id = None
+        def close_about(event=None):
+            nonlocal bind_id
+            if bind_id:
+                try:
+                    self.unbind("<Button-1>", bind_id)
+                except Exception:
+                    pass
+                bind_id = None
             if about.winfo_exists():
                 about.destroy()
-            self.unbind("<Button-1>", bind_id)
+
+        def on_main_click(event):
+            close_about()
+
         bind_id = self.bind("<Button-1>", on_main_click, add="+")
 
         if hasattr(self, '_ctk_logo'):
@@ -280,7 +300,7 @@ class WatermarkApp(ctk.CTk):
         ctk.CTkLabel(main_frame, text="Acknowledgments: We gratefully acknowledge the OpenCV community.").pack(pady=(20, 2))
         ctk.CTkLabel(main_frame, text="Contact us: support@andrewwangdev.com").pack(pady=2)
         
-        ctk.CTkButton(main_frame, text="Close", width=100, command=about.destroy).pack(pady=(15, 10))
+        ctk.CTkButton(main_frame, text="Close", width=100, command=close_about).pack(pady=(15, 10))
         
         about.after(50, lambda: about.attributes("-alpha", 1.0))
 
@@ -291,7 +311,7 @@ class WatermarkApp(ctk.CTk):
             ctk.set_appearance_mode("Light")
 
     def _pick_input(self):
-        path = filedialog.askopenfilename(title="Select Image", filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp")])
+        path = filedialog.askopenfilename(title="Select Image", filetypes=[("Image Files", "*.png;*.jpg;*.jpeg;*.bmp;*.webp")])
         if path:
             self.input_path_var.set(path)
             self.log(f"Selected input: {path}")
@@ -300,57 +320,100 @@ class WatermarkApp(ctk.CTk):
         path = filedialog.askdirectory(title="Select Output Directory")
         if path:
             self.output_path_var.set(path)
-            self.log(f"Selected output directory: {path}")
+            self.log(f"Selected output dir: {path}")
 
-    def _on_mode_change(self, val):
+    def _on_mode_change(self, value):
+        idx = int(round(value))
         modes = ["Conservative", "Balanced", "Aggressive"]
-        colors = ["#56B6C2", "#C678DD", "#E06C75"] # Cyan, Purple, Red
-        idx = int(round(float(val)))
-        
-        # Aggressive warning popup
-        if idx == 2 and not getattr(self, 'hide_aggressive_warning', False) and not getattr(self, 'warning_open', False):
-            self.warning_open = True
-            
+        colors = ["#98C379", "#C678DD", "#E06C75"]
+
+        if idx == 2 and not self.hide_slow_warning:
             dialog = ctk.CTkToplevel(self)
-            dialog.title("Warning")
-            dialog.geometry("450x150")
-            dialog.attributes("-topmost", True)
+            dialog.title("Aggressive Mode Warning")
+            dialog.geometry("400x180")
+            dialog.transient(self)
             dialog.grab_set()
-            
-            ctk.CTkLabel(dialog, text="Aggressive mode may severely degrade image quality.\nIt is only recommended for completely destroying stubborn watermarks.\nAre you sure you want to proceed?", wraplength=400).pack(pady=(20, 10))
-            
+
+            dialog.update_idletasks()
+            x = self.winfo_x() + (self.winfo_width() // 2) - 200
+            y = self.winfo_y() + (self.winfo_height() // 2) - 90
+            dialog.geometry(f"+{x}+{y}")
+
+            msg_lbl = ctk.CTkLabel(
+                dialog, 
+                text="Aggressive mode performs deep frequency domain filtering.\nThis may slightly soften high-contrast text edges.", 
+                wraplength=350,
+                justify="center"
+            )
+            msg_lbl.pack(pady=(20, 15))
+
+            btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+            btn_frame.pack(pady=10)
+
             def btn_continue():
-                self.warning_open = False
+                dialog.grab_release()
                 dialog.destroy()
-                
+
             def btn_dont_show():
-                self.hide_aggressive_warning = True
-                self.warning_open = False
+                self.hide_slow_warning = True
+                dialog.grab_release()
                 dialog.destroy()
-                
+
             def btn_cancel():
                 self.mode_slider.set(1)
                 self.mode_lbl.configure(text=modes[1], text_color=colors[1])
-                self.warning_open = False
+                dialog.grab_release()
                 dialog.destroy()
-                
-            btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
-            btn_frame.pack(pady=5)
-            
-            ctk.CTkButton(btn_frame, text="Continue", width=80, command=btn_continue).pack(side="left", padx=5)
-            ctk.CTkButton(btn_frame, text="Continue & Don't Show Again", width=180, fg_color="#E06C75", hover_color="#C85A63", command=btn_dont_show).pack(side="left", padx=5)
-            ctk.CTkButton(btn_frame, text="Cancel", width=80, fg_color="gray", hover_color="#555555", command=btn_cancel).pack(side="left", padx=5)
 
-            # Handle explicit window closing
+            ctk.CTkButton(btn_frame, text="Continue", width=80, command=btn_continue).pack(side="left", padx=5)
+            ctk.CTkButton(btn_frame, text="Don't Show Again", width=140, fg_color="#E06C75", hover_color="#C85A63", command=btn_dont_show).pack(side="left", padx=5)
+            ctk.CTkButton(btn_frame, text="Cancel", width=80, fg_color="gray", hover_color="#555555", command=btn_cancel).pack(side="left", padx=5)
             dialog.protocol("WM_DELETE_WINDOW", btn_cancel)
 
         self.mode_lbl.configure(text=modes[idx], text_color=colors[idx])
 
     def _trigger_action(self, action: str):
-        if self.input_path_var.get() == "No image selected" or not os.path.exists(self.input_path_var.get()):
+        # Debounce: prevent concurrent execution
+        if self.is_processing:
+            return
+
+        in_path = self.input_path_var.get()
+        if in_path == "No image selected" or not os.path.exists(in_path):
             self.log("Error: Please select a valid input image.", level="error")
             return
-        self._execute_action_threaded(action)
+
+        methods = []
+        if self.cb_lsb.get() == 1: methods.append("LSB")
+        if self.cb_fft.get() == 1: methods.append("FFT")
+        if self.cb_dct.get() == 1: methods.append("DCT")
+        if self.cb_dwt.get() == 1: methods.append("DWT")
+
+        if not methods:
+            self.log("Error: Please select at least one method.", level="error")
+            return
+
+        modes = ["Conservative", "Balanced", "Aggressive"]
+        aggressiveness = modes[int(round(self.mode_slider.get()))]
+
+        # Take parameters snapshot on main thread
+        params = {
+            "image_path": in_path,
+            "output_path": self.output_path_var.get(),
+            "methods": methods,
+            "color_preserve": (self.cb_color.get() == 1),
+            "rand_name": (self.cb_rand_name.get() == 1),
+            "rand_size": (self.cb_rand_size.get() == 1),
+            "force_jpeg": (self.cb_force_jpeg.get() == 1),
+            "aggressiveness": aggressiveness,
+            "action": action
+        }
+
+        # Lock UI
+        self.is_processing = True
+        self.btn_detect.configure(state="disabled")
+        self.btn_clean.configure(state="disabled")
+
+        self._execute_action_threaded(params)
 
     def _copy_log(self):
         self.clipboard_clear()
@@ -363,17 +426,29 @@ class WatermarkApp(ctk.CTk):
 
     def _cancel_action(self):
         self.cancel_flag = True
-        self.log("Cancelling task... Please wait for the current step to abort.", level="warning")
+        self.log("Cancelling task... Aborting current pipeline.", level="warning")
         if hasattr(self, 'cancel_btn_ref') and self.cancel_btn_ref.winfo_exists():
             self.cancel_btn_ref.configure(state="disabled")
 
     def _inject_progress_bar(self):
         self.current_progress_frame = ctk.CTkFrame(self.log_box._textbox, fg_color="#1E1E1E", corner_radius=0)
         
-        self.prog_lbl = ctk.CTkLabel(self.current_progress_frame, text="[" + " "*40 + "] 0%", font=ctk.CTkFont(family="Consolas", size=13, weight="bold"), text_color="#FFFFFF")
+        self.prog_lbl = ctk.CTkLabel(
+            self.current_progress_frame, 
+            text="[" + " "*30 + "] 0% Initializing...", 
+            font=ctk.CTkFont(family="Consolas", size=13, weight="bold"), 
+            text_color="#FFFFFF"
+        )
         self.prog_lbl.pack(side="left", padx=(5, 10), pady=2)
         
-        self.cancel_btn_ref = ctk.CTkButton(self.current_progress_frame, text="Abort [X]", width=70, height=22, fg_color="#E06C75", hover_color="#C85A63", command=self._cancel_action, font=ctk.CTkFont(family="Consolas", size=11, weight="bold"))
+        self.cancel_btn_ref = ctk.CTkButton(
+            self.current_progress_frame, 
+            text="Abort [X]", 
+            width=70, height=22, 
+            fg_color="#E06C75", hover_color="#C85A63", 
+            command=self._cancel_action, 
+            font=ctk.CTkFont(family="Consolas", size=11, weight="bold")
+        )
         self.cancel_btn_ref.pack(side="left", padx=(0, 5), pady=2)
 
         self.log_box.configure(state="normal")
@@ -381,97 +456,59 @@ class WatermarkApp(ctk.CTk):
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
-    def _update_progress(self, percent: int):
+    def _update_progress(self, percent: int, msg: str = ""):
         if hasattr(self, 'prog_lbl') and self.prog_lbl.winfo_exists():
-            bars = int((percent / 100.0) * 40)
-            bar_str = "█" * bars + "░" * (40 - bars)
-            self.prog_lbl.configure(text=f"[{bar_str}] {percent}%")
+            percent = min(100, max(0, percent))
+            bars = int((percent / 100.0) * 30)
+            bar_str = "█" * bars + "░" * (30 - bars)
+            desc_str = f" {msg}" if msg else ""
+            self.prog_lbl.configure(text=f"[{bar_str}] {percent}%{desc_str}")
 
     def _remove_progress_bar(self):
         if hasattr(self, 'current_progress_frame') and self.current_progress_frame.winfo_exists():
             self.current_progress_frame.destroy()
 
-    def _execute_action_threaded(self, action: str):
-        import threading
-        t = threading.Thread(target=self._execute_action, args=(action,))
+    def _execute_action_threaded(self, params: dict):
+        t = threading.Thread(target=self._execute_action, args=(params,))
         t.daemon = True
         t.start()
 
-    def _execute_action(self, action: str):
+    def _execute_action(self, params: dict):
         self.cancel_flag = False
-        import time, threading
+        action = params["action"]
 
         self.log(f"--- Starting {action.upper()} ---", level="highlight")
         self.after(0, self._inject_progress_bar)
-        
-        processing_done = False
-        
-        def animate_progress():
-            # Guarantee a minimum of 2 seconds of smooth animation
-            for i in range(20):
-                if self.cancel_flag:
-                    break
-                self.after(0, self._update_progress, int((i / 19.0) * 100))
-                time.sleep(0.1)
-            
-            # If the heavy processing is STILL running, hang the progress bar at 99%
-            while not processing_done and not self.cancel_flag:
-                time.sleep(0.1)
-
-        anim_thread = threading.Thread(target=animate_progress, daemon=True)
-        anim_thread.start()
 
         try:
-            in_path = self.input_path_var.get()
-            out_path = self.output_path_var.get()
-
-            methods = []
-            if self.cb_lsb.get() == 1: methods.append("LSB")
-            if self.cb_fft.get() == 1: methods.append("FFT")
-            if self.cb_dct.get() == 1: methods.append("DCT")
-            if self.cb_dwt.get() == 1: methods.append("DWT")
-
-            if not methods:
-                self.log("Error: Please select at least one method.", level="error")
-                return
-
-            color_preserve = (self.cb_color.get() == 1)
-            rand_name = (self.cb_rand_name.get() == 1)
-            rand_size = (self.cb_rand_size.get() == 1)
-            force_jpeg = (self.cb_force_jpeg.get() == 1)
-            
-            modes = ["Conservative", "Balanced", "Aggressive"]
-            aggressiveness = modes[int(round(self.mode_slider.get()))]
-
             processor = WatermarkProcessor()
-            
-            # Using our updated processor API
+
+            def progress_cb(pct, desc):
+                self.after(0, self._update_progress, pct, desc)
+
             msg, success = processor.process_image(
-                image_path=in_path,
-                methods=methods,
+                image_path=params["image_path"],
+                methods=params["methods"],
                 action=action,
-                color_preserve=color_preserve,
-                aggressiveness=aggressiveness,
-                output_path=out_path,
+                color_preserve=params["color_preserve"],
+                aggressiveness=params["aggressiveness"],
+                output_path=params["output_path"],
                 cancel_check=lambda: self.cancel_flag,
-                rand_name=rand_name,
-                rand_size=rand_size,
-                force_jpeg=force_jpeg
+                rand_name=params["rand_name"],
+                rand_size=params["rand_size"],
+                force_jpeg=params["force_jpeg"],
+                progress_callback=progress_cb
             )
-            
-            processing_done = True
-            anim_thread.join() # Wait for the 2-second visual effect to finish if it was faster than that
-            
+
             if self.cancel_flag:
                 self.log("Task cancelled by user.", level="error")
                 return
 
             if success and action == "detect":
-                # msg is a dict of results
-                self._print_detection_table(msg)
+                self.after(0, self._print_detection_table, msg)
             elif success and action == "clean":
                 self.log(msg, level="success")
-                actual_path = out_path
+                actual_path = params["output_path"]
                 if "saved to:\n" in msg:
                     actual_path = msg.split("saved to:\n")[1].strip()
                 self.after(0, self._inject_action_buttons, actual_path)
@@ -486,8 +523,16 @@ class WatermarkApp(ctk.CTk):
             import traceback
             traceback.print_exc()
         finally:
-            self.after(0, self._remove_progress_bar)
-            self.log(f"--- {action.upper()} Finished ---\n", level="highlight")
+            self.after(0, self._finish_action, action)
+
+    def _finish_action(self, action: str):
+        self._remove_progress_bar()
+        self.is_processing = False
+        if hasattr(self, 'btn_detect') and self.btn_detect.winfo_exists():
+            self.btn_detect.configure(state="normal")
+        if hasattr(self, 'btn_clean') and self.btn_clean.winfo_exists():
+            self.btn_clean.configure(state="normal")
+        self.log(f"--- {action.upper()} Finished ---\n", level="highlight")
 
     def _print_detection_table(self, results):
         self.log_box.configure(state="normal")
@@ -503,8 +548,7 @@ class WatermarkApp(ctk.CTk):
         # Helper to determine level
         def get_lvl(score, detected):
             if not detected: return "success", "Clean"
-            # simple heuristic for color intensity
-            if score > 50 or score > 0.245: return "error", "Found"
+            if score > 50 or score > 0.485: return "error", "Found"
             return "warning", "Suspicious"
 
         # Row 2: Scores
@@ -528,7 +572,7 @@ class WatermarkApp(ctk.CTk):
             self.log_box.insert("end", "| ")
         self.log_box.insert("end", "\n")
 
-        # Conclusion Logic
+        # Deterministic weighted probability calculation (No fake random numbers!)
         total_weight = 0
         earned_weight = 0
         weights = {"LSB": 25, "FFT": 40, "DCT": 15, "DWT": 20}
@@ -539,38 +583,33 @@ class WatermarkApp(ctk.CTk):
             if m in found_methods:
                 earned_weight += w
                 
-        if total_weight > 0:
+        if total_weight > 0 and found_methods:
             prob = int((earned_weight / total_weight) * 95)
+            prob = min(prob, 99)
         else:
-            prob = 0
-            
-        if not found_methods:
-            import random
-            prob = random.randint(1, 15) # Baseline noise
-            
-        prob = min(prob, 99)
+            prob = 0 # Deterministic 0% when no components are found
         
         if prob >= 70:
             kw = "The image is probably watermarked"
             color = "error"
-        elif prob >= 60:
+        elif prob >= 50:
             kw = "The image is likely watermarked"
             color = "warning"
-        elif prob >= 40:
+        elif prob >= 30:
             kw = "The image is possibly watermarked"
             color = "warning"
-        elif prob >= 30:
+        elif prob > 0:
             kw = "The image is conceivably watermarked"
             color = "info"
         else:
-            kw = "The image is unlikely to be watermarked"
+            kw = "The image is clean / unlikely to be watermarked"
             color = "success"
 
         self.log_box.insert("end", "Conclusion: ")
         self.log_box.insert("end", f"{kw} ({prob}% probability).\n", color)
         
         if found_methods:
-            self.log_box.insert("end", " " * 12 + f"Watermark components likely present in: {', '.join(found_methods)}.\n", color)
+            self.log_box.insert("end", " " * 12 + f"Watermark components detected in: {', '.join(found_methods)}.\n", color)
         else:
             self.log_box.insert("end", " " * 12 + "No significant watermark signatures detected.\n", color)
 
@@ -581,9 +620,16 @@ class WatermarkApp(ctk.CTk):
         btn_frame = ctk.CTkFrame(self.log_box._textbox, fg_color="#1E1E1E", corner_radius=0)
         
         def open_file():
-            import os
-            try: os.startfile(file_path)
-            except Exception as e: self.log(f"Cannot open: {e}", "error")
+            import sys, subprocess, os
+            try:
+                if sys.platform == "win32":
+                    os.startfile(file_path)
+                elif sys.platform == "darwin":
+                    subprocess.run(["open", file_path], check=False)
+                else:
+                    subprocess.run(["xdg-open", file_path], check=False)
+            except Exception as e:
+                self.log(f"Cannot open: {e}", "error")
             
         btn_open = ctk.CTkButton(
             btn_frame, 

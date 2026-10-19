@@ -42,20 +42,20 @@ python src/main.py
 3. **Workflow**: Browse for an input image -> Select your detection/privacy parameters -> Hit **Detect Watermarks** (to scan) or **Clean & Save** (to output the neutralized image).
 
 ## 📊 Scoring & Verification 
-The Detection Engine runs a fully mathematical analysis to compute anomaly scores across 4 dimensions. Based on statistical thresholds, it determines a global probability of watermark existence:
+The Detection Engine runs an empirical mathematical analysis across 4 frequency and spatial dimensions to compute anomaly scores and determine a global confidence probability:
 
 ```text
 --- Starting DETECT ---
 Method:     | LSB       | FFT       | DCT       | DWT       | 
-Score:      | 0.25      | 239.23    | 43.59     | 0.15      | 
-Result:     | Found     | Clean     | Clean     | Clean     | 
-Conclusion: The image is unlikely to be watermarked (23% probability).
-            Watermark components likely present in: LSB.
+Score:      | 0.32      | 28.50     | 142.10    | 12.40     | 
+Result:     | Clean     | Clean     | Clean     | Clean     | 
+Conclusion: The image is clean / unlikely to be watermarked (0% probability).
+            No significant watermark signatures detected.
 --- DETECT Finished ---
 ```
-- **LSB (Spatial)**: Calculates entropy and bit-plane correlation. High randomness in LSB yields an anomaly score (e.g., > 0.2 threshold triggers "Found").
-- **FFT / DCT / DWT**: Identifies geometric shapes or high-frequency spikes in the magnitude spectrum. A high-variance score indicates artificial manipulation.
-- **Global Probability**: A weighted Bayesian combination of the 4 independent dimension scores, giving you a definitive percentage (e.g., 23%) of watermark likelihood.
+- **LSB (Spatial)**: Measures spatial transition probability and difference energy in lowest bit-planes. Natural images have smooth neighborhoods (< 0.45); pseudo-random or encrypted steganographic payloads converge towards Bernoulli white noise (~0.500).
+- **FFT / DCT / DWT**: Identifies geometric spikes, mid-frequency AC clusters, and wavelet high-frequency anomalies via fully vectorized transforms.
+- **Global Probability**: A deterministic, multi-feature weighted confidence model (Weighted Confidence Evaluation). If no watermarks are detected, the score deterministically resolves to 0%.
 
 ## 🧠 Core Algorithm Architecture
 

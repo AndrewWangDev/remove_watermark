@@ -1,7 +1,6 @@
-opencv-python
-numpy
-opencv-python
-scipy
-PyWavelets
-customtkinter
-pillow
+numpy>=1.24.0,<2.0.0
+opencv-python>=4.8.0
+scipy>=1.10.0
+PyWavelets>=1.4.0
+customtkinter>=5.2.0
+pillow>=10.0.0
