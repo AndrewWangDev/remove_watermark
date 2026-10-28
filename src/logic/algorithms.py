@@ -11,7 +11,46 @@ for _k in range(_DCT_N):
         _DCT_A[_k, _n] = _ck * np.cos(np.pi * (2 * _n + 1) * _k / (2.0 * _DCT_N))
 _DCT_AT = _DCT_A.T
 
-def process_lsb(img_channel, mode, action="clean"):
+# Precompute 8x8 mid-frequency mask for blind spread-spectrum watermark detection
+_DCT_MID_MASK = np.zeros((8, 8), dtype=bool)
+for _u in range(8):
+    for _v in range(8):
+        if 3 <= (_u + _v) <= 8 and not (_u == 0 and _v == 0):
+            _DCT_MID_MASK[_u, _v] = True
+
+def _deblock_8x8(img):
+    """
+    Lightweight adaptive deblocking filter for 8x8 block boundaries.
+    Smooths boundary step discontinuities without blurring internal block contents.
+    """
+    h, w = img.shape
+    out = img.copy()
+    
+    # Horizontal block boundaries: row indices 8, 16, 24, ...
+    for r in range(8, h, 8):
+        # 3-tap lowpass across the boundary: [r-1], [r]
+        p0 = img[r - 1, :].astype(np.float32)
+        q0 = img[r, :].astype(np.float32)
+        diff = np.abs(p0 - q0)
+        # Only smooth small/subtle quantization steps (< 16), preserving true image edges
+        smooth_mask = diff < 16.0
+        if np.any(smooth_mask):
+            out[r - 1, smooth_mask] = np.clip(0.65 * p0[smooth_mask] + 0.35 * q0[smooth_mask], 0, 255)
+            out[r, smooth_mask] = np.clip(0.35 * p0[smooth_mask] + 0.65 * q0[smooth_mask], 0, 255)
+            
+    # Vertical block boundaries: col indices 8, 16, 24, ...
+    for c in range(8, w, 8):
+        p0 = out[:, c - 1].astype(np.float32)
+        q0 = out[:, c].astype(np.float32)
+        diff = np.abs(p0 - q0)
+        smooth_mask = diff < 16.0
+        if np.any(smooth_mask):
+            out[smooth_mask, c - 1] = np.clip(0.65 * p0[smooth_mask] + 0.35 * q0[smooth_mask], 0, 255)
+            out[smooth_mask, c] = np.clip(0.35 * p0[smooth_mask] + 0.65 * q0[smooth_mask], 0, 255)
+            
+    return out
+
+def process_lsb(img_channel, mode, action="clean", cancel_check=None):
     """
     mode: 'Conservative', 'Balanced', 'Aggressive'
     action: 'detect' or 'clean'
@@ -26,7 +65,7 @@ def process_lsb(img_channel, mode, action="clean"):
         if h < 2 or w < 2:
             return {"detected": False, "score": 0.0}
 
-        # Check spatial transition probability / difference energy globally and in local blocks
+        # Check spatial transition probability / difference energy globally
         # Natural images exhibit spatial correlation in LSB (diff_rate is typically 0.25 ~ 0.44)
         # Pseudo-random / encrypted payloads exhibit Bernoulli white noise (diff_rate -> 0.500)
         diff_h = np.mean(np.abs(lsb_plane[:, :-1] - lsb_plane[:, 1:]))
@@ -34,21 +73,23 @@ def process_lsb(img_channel, mode, action="clean"):
         diff_rate = float((diff_h + diff_v) / 2.0)
         mean_bit = float(np.mean(lsb_plane))
         
-        # Check local blocks (64x64) to prevent sparse/localized watermark payloads from being diluted
+        # Vectorized 4D block analysis (64x64) without Python loops for massive performance
         max_local_diff = diff_rate
         if h >= 64 and w >= 64:
-            step = 64
-            local_diffs = []
-            for r in range(0, h - step + 1, step):
-                for c in range(0, w - step + 1, step):
-                    blk = lsb_plane[r:r+step, c:c+step]
-                    # Only consider blocks with balanced bit ratio
-                    if abs(np.mean(blk) - 0.5) < 0.05:
-                        dh = np.mean(np.abs(blk[:, :-1] - blk[:, 1:]))
-                        dv = np.mean(np.abs(blk[:-1, :] - blk[1:, :]))
-                        local_diffs.append((dh + dv) / 2.0)
-            if local_diffs:
-                max_local_diff = float(np.max(local_diffs))
+            n_r = h // 64
+            n_c = w // 64
+            # (n_r, 64, n_c, 64) -> (n_r, n_c, 64, 64)
+            blocks = lsb_plane[:n_r * 64, :n_c * 64].reshape(n_r, 64, n_c, 64).transpose(0, 2, 1, 3)
+            blk_means = np.mean(blocks, axis=(-2, -1))
+            balanced_mask = np.abs(blk_means - 0.5) < 0.05
+            
+            dh = np.mean(np.abs(blocks[:, :, :, :-1] - blocks[:, :, :, 1:]), axis=(-2, -1))
+            dv = np.mean(np.abs(blocks[:, :, :-1, :] - blocks[:, :, 1:, :]), axis=(-2, -1))
+            diffs = (dh + dv) / 2.0
+            
+            valid_diffs = diffs[balanced_mask]
+            if len(valid_diffs) > 0:
+                max_local_diff = float(np.max(valid_diffs))
         
         # Global payload or strong local payload
         is_global_payload = (diff_rate > 0.485) and (abs(mean_bit - 0.5) < 0.02)
@@ -63,7 +104,7 @@ def process_lsb(img_channel, mode, action="clean"):
         cleaned = img_channel & mask
         return cleaned
 
-def process_fft(img_channel, mode, action="clean"):
+def process_fft(img_channel, mode, action="clean", cancel_check=None):
     rows, cols = img_channel.shape
     if rows < 16 or cols < 16:
         if action == "detect":
@@ -105,20 +146,20 @@ def process_fft(img_channel, mode, action="clean"):
         return {"detected": detected, "score": float(round(snr_score, 2))}
         
     if action == "clean":
+        if cancel_check and cancel_check():
+            return None
+
         notch_radius = 2
         if mode == "Aggressive":
             notch_radius = 5
         elif mode == "Conservative":
             notch_radius = 1
             
-        # Efficient vectorized morphological dilation instead of point-by-point cv2.circle
+        # Efficient vectorized morphological dilation
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * notch_radius + 1, 2 * notch_radius + 1))
         dilated_spikes = cv2.dilate(spikes.astype(np.uint8), kernel)
         
         # Enforce conjugate symmetry F(-u, -v) = F*(u, v) around center to avoid spatial phase distortion
-        # In even-dimension arrays, np.fft.fftshift DC center is at (rows//2, cols//2),
-        # while np.rot90 rotates around ((rows-1)/2, (cols-1)/2).
-        # We apply np.roll by 1 for even dimensions to align exactly with DC frequency center!
         shift_r = 1 if rows % 2 == 0 else 0
         shift_c = 1 if cols % 2 == 0 else 0
         rotated_spikes = np.rot90(dilated_spikes, 2)
@@ -126,20 +167,27 @@ def process_fft(img_channel, mode, action="clean"):
             rotated_spikes = np.roll(rotated_spikes, (shift_r, shift_c), axis=(0, 1))
 
         dilated_symmetric = np.maximum(dilated_spikes, rotated_spikes)
-        mask = 1.0 - dilated_symmetric.astype(np.float32)
         
-        # Smooth mask with Gaussian blur to prevent Gibbs ringing artifacts
-        mask = cv2.GaussianBlur(mask, (5, 5), 0)
+        # Build continuous Gaussian notch filter via distanceTransform
+        # This ensures the notch strictly reaches 0.0 at spike centers (100% attenuation)
+        # while transitioning smoothly outward without Gibbs ringing or central blur wash-out
+        if np.any(dilated_symmetric):
+            dist = cv2.distanceTransform(1 - dilated_symmetric, cv2.DIST_L2, 3)
+            sigma = max(1.5, float(notch_radius) * 0.8)
+            mask = 1.0 - np.exp(-(dist ** 2) / (2.0 * (sigma ** 2)))
+            mask = np.clip(mask, 0.0, 1.0).astype(np.float32)
+        else:
+            mask = np.ones((rows, cols), dtype=np.float32)
         
         fshift_filtered = fshift * mask
         f_ishift = np.fft.ifftshift(fshift_filtered)
         img_back = np.fft.ifft2(f_ishift)
         
-        # Take real part to strictly preserve luminance and contrast (not np.abs which reverses phases)
+        # Take real part to strictly preserve luminance and contrast
         img_back = np.real(img_back)
         return np.clip(img_back, 0, 255).astype(np.uint8)
 
-def process_dct(img_channel, mode, action="clean"):
+def process_dct(img_channel, mode, action="clean", cancel_check=None):
     rows, cols = img_channel.shape
     if rows < 8 or cols < 8:
         if action == "detect":
@@ -165,19 +213,38 @@ def process_dct(img_channel, mode, action="clean"):
     blocks_dct = _DCT_A @ blocks @ _DCT_AT
     
     if action == "detect":
-        # Global analysis: calculate AC energy across all blocks
+        # Measure mid-frequency AC coefficient energy and its dispersion
+        # Text/UI edges have high AC only at sparse stroke boundaries (p25 == 0, cv > 1.5).
+        # A true spread-spectrum watermark injects perturbation uniformly across all blocks,
+        # lifting smooth background baseline (p25_ac > 20.0 with mid_ratio > 0.40).
         ac_energy_per_block = np.sum(np.abs(blocks_dct), axis=(-1, -2)) - np.abs(blocks_dct[:, :, 0, 0])
-        # Watermark embedding typically creates consistent artificial high-frequency/mid-frequency AC energy
-        mean_ac = float(np.mean(ac_energy_per_block))
-        p90_ac = float(np.percentile(ac_energy_per_block, 90))
+        mid_energy_per_block = np.sum(np.abs(blocks_dct[:, :, _DCT_MID_MASK]), axis=-1)
         
-        # Baseline heuristic: natural images have varied AC depending on texture, but structured watermarks
-        # create uniform elevated AC energy. Score reflects the 90th percentile AC energy
-        threshold = 2200.0 if mode == "Conservative" else (1600.0 if mode == "Balanced" else 1200.0)
-        detected = bool(p90_ac > threshold)
-        return {"detected": detected, "score": float(round(p90_ac, 2))}
+        total_ac = float(np.sum(ac_energy_per_block))
+        total_mid = float(np.sum(mid_energy_per_block))
+        global_mid_ratio = float(total_mid / total_ac) if total_ac > 1.0 else 0.0
+        
+        p25_ac = float(np.percentile(ac_energy_per_block, 25))
+        p90_ac = float(np.percentile(ac_energy_per_block, 90))
+        mean_ac = float(np.mean(ac_energy_per_block))
+        std_ac = float(np.std(ac_energy_per_block))
+        cv = std_ac / (mean_ac + 1e-5)
+        
+        threshold_ac = 2200.0 if mode == "Conservative" else (1600.0 if mode == "Balanced" else 1200.0)
+        
+        is_watermark = False
+        if p25_ac > 20.0 and global_mid_ratio > 0.40:
+            is_watermark = True
+        elif p90_ac > threshold_ac and global_mid_ratio > 0.45 and cv < 1.3:
+            is_watermark = True
+            
+        score_val = float(round(p25_ac * 10.0 + p90_ac * global_mid_ratio * 0.05, 2))
+        return {"detected": bool(is_watermark), "score": score_val}
         
     if action == "clean":
+        if cancel_check and cancel_check():
+            return None
+
         # Standard JPEG Luminance Quantization Matrix
         Q_base = np.array([
             [16, 11, 10, 16, 24, 40, 51, 61],
@@ -208,10 +275,13 @@ def process_dct(img_channel, mode, action="clean"):
         
         # Reconstruct full image
         cleaned_padded = blocks_cleaned.transpose(0, 2, 1, 3).reshape(padded_rows, padded_cols)
-        cleaned = cleaned_padded[:rows, :cols]
+        
+        # Apply boundary deblocking filter to eliminate 8x8 blocking artifacts on lossless screenshots
+        cleaned_deblocked = _deblock_8x8(cleaned_padded)
+        cleaned = cleaned_deblocked[:rows, :cols]
         return np.clip(cleaned, 0, 255).astype(np.uint8)
 
-def process_dwt(img_channel, mode, action="clean"):
+def process_dwt(img_channel, mode, action="clean", cancel_check=None):
     rows, cols = img_channel.shape
     if rows < 16 or cols < 16:
         if action == "detect":
@@ -226,9 +296,7 @@ def process_dwt(img_channel, mode, action="clean"):
     sigma = float(np.median(np.abs(HH)) / 0.6745)
     
     if action == "detect":
-        # Natural images have high edge energy in LH/HL, artificial noise/watermarks inflate HH relative to LL
         hh_energy = float(np.var(HH))
-        # Relative ratio against LL baseline
         ll_energy = float(np.var(LL)) + 1e-6
         ratio = (hh_energy / ll_energy) * 1000.0
         
@@ -237,18 +305,25 @@ def process_dwt(img_channel, mode, action="clean"):
         return {"detected": detected, "score": float(round(hh_energy, 2))}
         
     if action == "clean":
+        if cancel_check and cancel_check():
+            return None
+
         # Adaptive threshold based on estimated noise sigma
         base_thresh = max(1.0, sigma * 1.5)
         if mode == "Aggressive":
-            threshold = base_thresh * 2.5
+            threshold = base_thresh * 2.2
         elif mode == "Conservative":
-            threshold = base_thresh * 0.8
+            threshold = base_thresh * 0.7
         else:
-            threshold = base_thresh * 1.5
+            threshold = base_thresh * 1.3
             
-        LH_t = pywt.threshold(LH, threshold, mode='soft')
-        HL_t = pywt.threshold(HL, threshold, mode='soft')
+        # Protect text strokes: apply soft thresholding strictly to diagonal details (HH)
+        # where high-frequency invisible watermarks hide.
+        # For horizontal (LH) and vertical (HL) subbands containing critical text stroke edges,
+        # apply mild dead-zone filtering to preserve crisp font contours.
         HH_t = pywt.threshold(HH, threshold, mode='soft')
+        LH_t = pywt.threshold(LH, threshold * 0.4, mode='greater')
+        HL_t = pywt.threshold(HL, threshold * 0.4, mode='greater')
         
         coeffs2_t = LL, (LH_t, HL_t, HH_t)
         reconstructed = pywt.idwt2(coeffs2_t, wavelet)

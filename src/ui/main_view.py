@@ -10,13 +10,27 @@ import customtkinter as ctk
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from logic.processor import WatermarkProcessor
 
+def get_resource_path(relative_path: str) -> str:
+    """Get absolute path to resource, working seamlessly for source dev and PyInstaller onefile _MEIPASS."""
+    if hasattr(sys, '_MEIPASS'):
+        candidate = os.path.join(sys._MEIPASS, relative_path)
+        if os.path.exists(candidate):
+            return candidate
+    candidate = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", relative_path))
+    if os.path.exists(candidate):
+        return candidate
+    candidate = os.path.abspath(relative_path)
+    if os.path.exists(candidate):
+        return candidate
+    return relative_path
+
 class WatermarkApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
         self.title("Watermark Detector & Cleaner")
-        self.geometry("1100x700")
-        self.minsize(900, 600)
+        self.geometry("1100x720")
+        self.minsize(900, 620)
         
         try:
             import ctypes
@@ -25,26 +39,10 @@ class WatermarkApp(ctk.CTk):
         except Exception:
             pass
         
-        try:
-            ico_path = os.path.join(os.path.dirname(__file__), "..", "..", "logo.ico")
-            if os.path.exists(ico_path):
-                self.after(200, lambda: self.iconbitmap(ico_path))
-            elif os.path.exists("logo.ico"):
-                self.after(200, lambda: self.iconbitmap("logo.ico"))
-        except Exception:
-            pass
+        # Cross-platform window icon loading with MEIPASS resolution
+        self._init_window_icons()
 
-        try:
-            from PIL import Image
-            png_path = os.path.join(os.path.dirname(__file__), "..", "..", "logo.png")
-            if os.path.exists(png_path):
-                self._ctk_logo = ctk.CTkImage(light_image=Image.open(png_path), dark_image=Image.open(png_path), size=(64, 64))
-            elif os.path.exists("logo.png"):
-                self._ctk_logo = ctk.CTkImage(light_image=Image.open("logo.png"), dark_image=Image.open("logo.png"), size=(64, 64))
-        except Exception:
-            pass
-
-        # Configure grid layout
+        # Configure grid layout: row 0=header, 1=config, 2=actions, 3=status/progress, 4=log
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(4, weight=1)
 
@@ -52,9 +50,39 @@ class WatermarkApp(ctk.CTk):
         self.hide_slow_warning = False
         self.cancel_flag = False
         self.is_processing = False
+        self.last_cleaned_path = None
 
         self._build_ui()
         self._redirect_stdout()
+
+    def _safe_set_icon(self, path: str):
+        try:
+            if os.path.exists(path) and self.winfo_exists():
+                self.iconbitmap(path)
+        except Exception:
+            pass
+
+    def _init_window_icons(self):
+        ico_path = get_resource_path("logo.ico")
+        png_path = get_resource_path("logo.png")
+
+        if sys.platform == "win32" and os.path.exists(ico_path):
+            self.after(200, lambda: self._safe_set_icon(ico_path))
+        elif os.path.exists(png_path):
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(png_path)
+                self._icon_photo = ImageTk.PhotoImage(img)
+                self.wm_iconphoto(True, self._icon_photo)
+            except Exception:
+                pass
+
+        if os.path.exists(png_path):
+            try:
+                from PIL import Image
+                self._ctk_logo = ctk.CTkImage(light_image=Image.open(png_path), dark_image=Image.open(png_path), size=(64, 64))
+            except Exception:
+                pass
 
     def _build_ui(self):
         # 1. Header Frame
@@ -71,7 +99,7 @@ class WatermarkApp(ctk.CTk):
 
         # Theme toggle
         self.theme_switch = ctk.CTkSwitch(header_frame, text="Dark Mode", command=self._toggle_theme)
-        self.theme_switch.select() # Default Dark
+        self.theme_switch.select()
         self.theme_switch.grid(row=0, column=2, sticky="e")
 
         # 2. Main Config Area
@@ -80,7 +108,6 @@ class WatermarkApp(ctk.CTk):
         config_frame.grid_columnconfigure(1, weight=1)
 
         # File selection
-        # Input
         ctk.CTkLabel(config_frame, text="Input Image:").grid(row=0, column=0, padx=10, pady=(15, 5), sticky="w")
         self.input_path_var = ctk.StringVar(value="No image selected")
         input_entry = ctk.CTkEntry(config_frame, textvariable=self.input_path_var, state="disabled")
@@ -94,7 +121,7 @@ class WatermarkApp(ctk.CTk):
         output_entry.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
         ctk.CTkButton(config_frame, text="Browse...", command=self._pick_output).grid(row=1, column=2, padx=10, pady=5)
 
-        # Options frame (holds algorithms, mode, and privacy settings)
+        # Options frame
         options_frame = ctk.CTkFrame(config_frame, fg_color="transparent")
         options_frame.grid(row=2, column=0, columnspan=3, padx=10, pady=(5, 10), sticky="ew")
 
@@ -136,7 +163,7 @@ class WatermarkApp(ctk.CTk):
         privacy_frame = ctk.CTkFrame(options_frame, fg_color="transparent")
         privacy_frame.grid(row=2, column=1, sticky="w")
         
-        self.cb_color = ctk.CTkSwitch(privacy_frame, text="Preserve Colors")
+        self.cb_color = ctk.CTkSwitch(privacy_frame, text="Preserve Colors", command=self._on_color_switch)
         self.cb_color.select()
         self.cb_color.pack(side="left", padx=(0, 30))
         
@@ -149,9 +176,9 @@ class WatermarkApp(ctk.CTk):
         self.cb_force_jpeg = ctk.CTkSwitch(privacy_frame, text="Force JPEG")
         self.cb_force_jpeg.pack(side="left", padx=(0, 30))
 
-        # Action Buttons (Saved as instance variables for debouncing & disabling)
+        # 3. Action Buttons
         actions_frame = ctk.CTkFrame(self, fg_color="transparent")
-        actions_frame.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
+        actions_frame.grid(row=2, column=0, padx=20, pady=(10, 5), sticky="ew")
         actions_frame.grid_columnconfigure((0, 1), weight=1)
 
         self.btn_detect = ctk.CTkButton(
@@ -172,13 +199,51 @@ class WatermarkApp(ctk.CTk):
         )
         self.btn_clean.grid(row=0, column=1, padx=5, sticky="ew")
 
-        # 3. Log Output Area
+        # 4. Dedicated Status & Progress Panel (Row 3, no private _textbox hacks!)
+        self.status_panel = ctk.CTkFrame(self, height=36, fg_color="transparent")
+        self.status_panel.grid(row=3, column=0, padx=25, pady=4, sticky="ew")
+        self.status_panel.grid_columnconfigure(0, weight=1)
+
+        self.prog_lbl = ctk.CTkLabel(
+            self.status_panel, 
+            text="Ready.", 
+            font=ctk.CTkFont(family="Consolas", size=13), 
+            text_color="#AAAAAA", 
+            anchor="w"
+        )
+        self.prog_lbl.grid(row=0, column=0, sticky="w")
+
+        # Action container on right side of status panel
+        self.status_actions = ctk.CTkFrame(self.status_panel, fg_color="transparent")
+        self.status_actions.grid(row=0, column=1, sticky="e")
+
+        self.btn_open_result = ctk.CTkButton(
+            self.status_actions,
+            text="Open Result",
+            width=110, height=28,
+            fg_color="#2FA572", hover_color="#1F7A50",
+            font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
+            command=self._open_last_result
+        )
+        # Hidden by default until clean succeeds
+        self.btn_open_result.pack_forget()
+
+        self.btn_abort = ctk.CTkButton(
+            self.status_actions,
+            text="Abort [X]",
+            width=80, height=28,
+            fg_color="#E06C75", hover_color="#C85A63",
+            font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
+            command=self._cancel_action
+        )
+        self.btn_abort.pack_forget()
+
+        # 5. Log Output Area (Row 4, Pure Text, Clean Copying)
         log_frame = ctk.CTkFrame(self, fg_color="#1E1E1E")
         log_frame.grid(row=4, column=0, padx=20, pady=(0, 20), sticky="nsew")
         log_frame.grid_rowconfigure(0, weight=1)
         log_frame.grid_columnconfigure(0, weight=1)
         
-        # Terminal-style textbox
         self.log_box = ctk.CTkTextbox(
             log_frame, 
             state="disabled", 
@@ -189,7 +254,6 @@ class WatermarkApp(ctk.CTk):
         )
         self.log_box.grid(row=0, column=0, padx=5, pady=(5, 0), sticky="nsew")
         
-        # Overlay for Copy and Clear buttons
         overlay = ctk.CTkFrame(log_frame, fg_color="transparent")
         overlay.place(relx=1.0, rely=0.0, anchor="ne", x=-10, y=10)
         
@@ -199,7 +263,7 @@ class WatermarkApp(ctk.CTk):
         btn_clear = ctk.CTkButton(overlay, text="Clear", width=40, height=24, font=ctk.CTkFont(size=11), fg_color="#333333", hover_color="#555555", command=self._clear_log)
         btn_clear.pack(side="left")
 
-        # Configure colorful tags
+        # Color tags
         self.log_box.tag_config("timestamp", foreground="#888888")
         self.log_box.tag_config("info", foreground="#56B6C2")
         self.log_box.tag_config("success", foreground="#98C379")
@@ -210,7 +274,7 @@ class WatermarkApp(ctk.CTk):
         self.log("System initialized. Ready.", level="info")
 
     def log(self, msg: str, level: str = "normal"):
-        """Thread-safe logging wrapper that dispatches to main Tkinter thread."""
+        """Thread-safe logging wrapper that dispatches safely to main Tkinter thread."""
         self.after(0, self._append_log, msg, level)
 
     def _append_log(self, msg: str, level: str = "normal"):
@@ -242,6 +306,10 @@ class WatermarkApp(ctk.CTk):
     def _redirect_stdout(self):
         pass
 
+    def _on_color_switch(self):
+        if self.cb_color.get() == 0:
+            self.log("Note: 'Preserve Colors' is OFF. Processed output will be converted to Grayscale.", level="warning")
+
     def _show_about_dialog(self):
         about = ctk.CTkToplevel(self)
         about.attributes("-alpha", 0.0)
@@ -257,7 +325,6 @@ class WatermarkApp(ctk.CTk):
         main_frame = ctk.CTkFrame(about, border_width=2, border_color="#58a6ff", corner_radius=10)
         main_frame.pack(fill="both", expand=True)
         
-        # Safe close handler that always unbinds main window listener
         bind_id = None
         def close_about(event=None):
             nonlocal bind_id
@@ -301,7 +368,6 @@ class WatermarkApp(ctk.CTk):
         ctk.CTkLabel(main_frame, text="Contact us: support@andrewwangdev.com").pack(pady=2)
         
         ctk.CTkButton(main_frame, text="Close", width=100, command=close_about).pack(pady=(15, 10))
-        
         about.after(50, lambda: about.attributes("-alpha", 1.0))
 
     def _toggle_theme(self):
@@ -361,7 +427,6 @@ class WatermarkApp(ctk.CTk):
 
             def btn_cancel():
                 self.mode_slider.set(1)
-                self.mode_lbl.configure(text=modes[1], text_color=colors[1])
                 dialog.grab_release()
                 dialog.destroy()
 
@@ -370,10 +435,13 @@ class WatermarkApp(ctk.CTk):
             ctk.CTkButton(btn_frame, text="Cancel", width=80, fg_color="gray", hover_color="#555555", command=btn_cancel).pack(side="left", padx=5)
             dialog.protocol("WM_DELETE_WINDOW", btn_cancel)
 
+            # Block modal execution until user explicitly decides (prevents premature label jump)
+            self.wait_window(dialog)
+            idx = int(round(self.mode_slider.get()))
+
         self.mode_lbl.configure(text=modes[idx], text_color=colors[idx])
 
     def _trigger_action(self, action: str):
-        # Debounce: prevent concurrent execution
         if self.is_processing:
             return
 
@@ -395,7 +463,6 @@ class WatermarkApp(ctk.CTk):
         modes = ["Conservative", "Balanced", "Aggressive"]
         aggressiveness = modes[int(round(self.mode_slider.get()))]
 
-        # Take parameters snapshot on main thread
         params = {
             "image_path": in_path,
             "output_path": self.output_path_var.get(),
@@ -408,14 +475,17 @@ class WatermarkApp(ctk.CTk):
             "action": action
         }
 
-        # Lock UI
         self.is_processing = True
         self.btn_detect.configure(state="disabled")
         self.btn_clean.configure(state="disabled")
+        self.btn_open_result.pack_forget()
+        self.btn_abort.configure(state="normal")
+        self.btn_abort.pack(side="right", padx=5)
 
         self._execute_action_threaded(params)
 
     def _copy_log(self):
+        """Clean log export: gets pure text without control frame artifacts."""
         self.clipboard_clear()
         self.clipboard_append(self.log_box.get("1.0", "end-1c"))
         
@@ -427,46 +497,29 @@ class WatermarkApp(ctk.CTk):
     def _cancel_action(self):
         self.cancel_flag = True
         self.log("Cancelling task... Aborting current pipeline.", level="warning")
-        if hasattr(self, 'cancel_btn_ref') and self.cancel_btn_ref.winfo_exists():
-            self.cancel_btn_ref.configure(state="disabled")
-
-    def _inject_progress_bar(self):
-        self.current_progress_frame = ctk.CTkFrame(self.log_box._textbox, fg_color="#1E1E1E", corner_radius=0)
-        
-        self.prog_lbl = ctk.CTkLabel(
-            self.current_progress_frame, 
-            text="[" + " "*30 + "] 0% Initializing...", 
-            font=ctk.CTkFont(family="Consolas", size=13, weight="bold"), 
-            text_color="#FFFFFF"
-        )
-        self.prog_lbl.pack(side="left", padx=(5, 10), pady=2)
-        
-        self.cancel_btn_ref = ctk.CTkButton(
-            self.current_progress_frame, 
-            text="Abort [X]", 
-            width=70, height=22, 
-            fg_color="#E06C75", hover_color="#C85A63", 
-            command=self._cancel_action, 
-            font=ctk.CTkFont(family="Consolas", size=11, weight="bold")
-        )
-        self.cancel_btn_ref.pack(side="left", padx=(0, 5), pady=2)
-
-        self.log_box.configure(state="normal")
-        self.log_box._textbox.window_create("end", window=self.current_progress_frame, padx=2, pady=2)
-        self.log_box.see("end")
-        self.log_box.configure(state="disabled")
+        self.btn_abort.configure(state="disabled")
 
     def _update_progress(self, percent: int, msg: str = ""):
-        if hasattr(self, 'prog_lbl') and self.prog_lbl.winfo_exists():
-            percent = min(100, max(0, percent))
-            bars = int((percent / 100.0) * 30)
-            bar_str = "█" * bars + "░" * (30 - bars)
-            desc_str = f" {msg}" if msg else ""
-            self.prog_lbl.configure(text=f"[{bar_str}] {percent}%{desc_str}")
+        percent = min(100, max(0, percent))
+        bars = int((percent / 100.0) * 30)
+        bar_str = "█" * bars + "░" * (30 - bars)
+        desc_str = f" {msg}" if msg else ""
+        self.prog_lbl.configure(text=f"[{bar_str}] {percent}%{desc_str}")
 
-    def _remove_progress_bar(self):
-        if hasattr(self, 'current_progress_frame') and self.current_progress_frame.winfo_exists():
-            self.current_progress_frame.destroy()
+    def _open_last_result(self):
+        if not self.last_cleaned_path or not os.path.exists(self.last_cleaned_path):
+            self.log("Error: Output file not found.", "error")
+            return
+        import subprocess
+        try:
+            if sys.platform == "win32":
+                os.startfile(self.last_cleaned_path)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", self.last_cleaned_path], check=False)
+            else:
+                subprocess.run(["xdg-open", self.last_cleaned_path], check=False)
+        except Exception as e:
+            self.log(f"Cannot open file: {e}", "error")
 
     def _execute_action_threaded(self, params: dict):
         t = threading.Thread(target=self._execute_action, args=(params,))
@@ -478,7 +531,7 @@ class WatermarkApp(ctk.CTk):
         action = params["action"]
 
         self.log(f"--- Starting {action.upper()} ---", level="highlight")
-        self.after(0, self._inject_progress_bar)
+        self.after(0, self._update_progress, 0, "Initializing...")
 
         try:
             processor = WatermarkProcessor()
@@ -511,7 +564,8 @@ class WatermarkApp(ctk.CTk):
                 actual_path = params["output_path"]
                 if "saved to:\n" in msg:
                     actual_path = msg.split("saved to:\n")[1].strip()
-                self.after(0, self._inject_action_buttons, actual_path)
+                self.last_cleaned_path = actual_path
+                self.after(0, self._show_open_button)
             else:
                 if msg is None:
                     self.log("Error: Please select at least one method.", level="error")
@@ -519,19 +573,25 @@ class WatermarkApp(ctk.CTk):
                     self.log(msg, level="error" if "Error" in msg else "warning")
 
         except Exception as e:
-            self.log(f"Error during {action}: {str(e)}", level="error")
+            # Crash-proof exception handling: format traceback as string to prevent sys.stderr is None crash
             import traceback
-            traceback.print_exc()
+            err_trace = traceback.format_exc()
+            self.log(f"Error during {action}: {str(e)}", level="error")
+            self.log(err_trace, level="error")
         finally:
             self.after(0, self._finish_action, action)
 
+    def _show_open_button(self):
+        self.btn_open_result.pack(side="right", padx=5)
+
     def _finish_action(self, action: str):
-        self._remove_progress_bar()
+        self.btn_abort.pack_forget()
         self.is_processing = False
         if hasattr(self, 'btn_detect') and self.btn_detect.winfo_exists():
             self.btn_detect.configure(state="normal")
         if hasattr(self, 'btn_clean') and self.btn_clean.winfo_exists():
             self.btn_clean.configure(state="normal")
+        self.prog_lbl.configure(text=f"{action.capitalize()} finished.")
         self.log(f"--- {action.upper()} Finished ---\n", level="highlight")
 
     def _print_detection_table(self, results):
@@ -556,8 +616,8 @@ class WatermarkApp(ctk.CTk):
                 if score >= 18.0 or detected: return "warning", "Suspicious"
                 return "success", "Clean"
             elif method == "DCT":
-                if score >= 1800.0: return "error", "Found"
-                if score >= 900.0 or detected: return "warning", "Suspicious"
+                if score >= 1200.0: return "error", "Found"
+                if score >= 600.0 or detected: return "warning", "Suspicious"
                 return "success", "Clean"
             elif method == "DWT":
                 if score >= 250.0: return "error", "Found"
@@ -589,7 +649,7 @@ class WatermarkApp(ctk.CTk):
             self.log_box.insert("end", "| ")
         self.log_box.insert("end", "\n")
 
-        # Deterministic weighted probability calculation (No fake random numbers!)
+        # Deterministic weighted probability calculation
         total_weight = 0
         earned_weight = 0
         weights = {"LSB": 25, "FFT": 40, "DCT": 15, "DWT": 20}
@@ -606,7 +666,7 @@ class WatermarkApp(ctk.CTk):
             prob = int((earned_weight / total_weight) * 95)
             prob = min(prob, 99)
         else:
-            prob = 0 # Deterministic 0% when no components are found
+            prob = 0
         
         if prob >= 70:
             kw = "The image is probably watermarked"
@@ -637,37 +697,6 @@ class WatermarkApp(ctk.CTk):
         else:
             self.log_box.insert("end", " " * 12 + "No significant watermark signatures detected.\n", color)
 
-        self.log_box.see("end")
-        self.log_box.configure(state="disabled")
-
-    def _inject_action_buttons(self, file_path: str):
-        btn_frame = ctk.CTkFrame(self.log_box._textbox, fg_color="#1E1E1E", corner_radius=0)
-        
-        def open_file():
-            import sys, subprocess, os
-            try:
-                if sys.platform == "win32":
-                    os.startfile(file_path)
-                elif sys.platform == "darwin":
-                    subprocess.run(["open", file_path], check=False)
-                else:
-                    subprocess.run(["xdg-open", file_path], check=False)
-            except Exception as e:
-                self.log(f"Cannot open: {e}", "error")
-            
-        btn_open = ctk.CTkButton(
-            btn_frame, 
-            text="Open Result", 
-            width=120, height=32, 
-            fg_color="#2FA572", hover_color="#1F7A50", 
-            font=ctk.CTkFont(family="Consolas", size=13, weight="bold"), 
-            command=open_file
-        )
-        btn_open.pack(side="left", padx=5, pady=(5, 10))
-        
-        self.log_box.configure(state="normal")
-        self.log_box._textbox.window_create("end", window=btn_frame, padx=5, pady=2)
-        self.log_box.insert("end", "\n")
         self.log_box.see("end")
         self.log_box.configure(state="disabled")
 
