@@ -200,9 +200,8 @@ class WatermarkApp(ctk.CTk):
         self.btn_clean.grid(row=0, column=1, padx=5, sticky="ew")
 
         # 4. Dedicated Status & Progress Panel (Row 3, no private _textbox hacks!)
-        self.status_panel = ctk.CTkFrame(self, height=36, fg_color="transparent")
-        self.status_panel.grid(row=3, column=0, padx=25, pady=4, sticky="ew")
-        self.status_panel.grid_columnconfigure(0, weight=1)
+        self.status_panel = ctk.CTkFrame(self, height=32, fg_color="transparent")
+        self.status_panel.grid(row=3, column=0, padx=20, pady=(2, 6), sticky="ew")
 
         self.prog_lbl = ctk.CTkLabel(
             self.status_panel, 
@@ -211,32 +210,29 @@ class WatermarkApp(ctk.CTk):
             text_color="#AAAAAA", 
             anchor="w"
         )
-        self.prog_lbl.grid(row=0, column=0, sticky="w")
-
-        # Action container on right side of status panel
-        self.status_actions = ctk.CTkFrame(self.status_panel, fg_color="transparent")
-        self.status_actions.grid(row=0, column=1, sticky="e")
-
-        self.btn_open_result = ctk.CTkButton(
-            self.status_actions,
-            text="Open Result",
-            width=110, height=28,
-            fg_color="#2FA572", hover_color="#1F7A50",
-            font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
-            command=self._open_last_result
-        )
-        # Hidden by default until clean succeeds
-        self.btn_open_result.pack_forget()
+        self.prog_lbl.pack(side="left", padx=5)
 
         self.btn_abort = ctk.CTkButton(
-            self.status_actions,
+            self.status_panel,
             text="Abort [X]",
             width=80, height=28,
             fg_color="#E06C75", hover_color="#C85A63",
             font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
             command=self._cancel_action
         )
+        self.btn_abort.pack(side="right", padx=5)
         self.btn_abort.pack_forget()
+
+        self.btn_open_result = ctk.CTkButton(
+            self.status_panel,
+            text="Open Result",
+            width=110, height=28,
+            fg_color="#2FA572", hover_color="#1F7A50",
+            font=ctk.CTkFont(family="Consolas", size=12, weight="bold"),
+            command=self._open_last_result
+        )
+        self.btn_open_result.pack(side="right", padx=5)
+        self.btn_open_result.pack_forget()
 
         # 5. Log Output Area (Row 4, Pure Text, Clean Copying)
         log_frame = ctk.CTkFrame(self, fg_color="#1E1E1E")
