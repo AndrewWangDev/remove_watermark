@@ -10,7 +10,6 @@
 </div>
 
 Detect and sanitize imperceptible digital watermarks and steganographic payloads across spatial and frequency domains. 100% offline & local processing.  
-检测并脱敏图像中的隐形数字暗水印与频域载荷，中和微观特征。100% 纯本地离线处理。
 
 ![Screenshot](Screenshot.png)
 
