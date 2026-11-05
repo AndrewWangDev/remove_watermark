@@ -1,0 +1,72 @@
+name: Release & Build Binary
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Standalone Windows EXE
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Build Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "pyinstaller>=6.0.0"
+
+      - name: Run Pre-Build Test Suite
+        run: |
+          python tests/test_watermark.py
+
+      - name: Compile Standalone Executable
+        run: |
+          cmd /c build.bat
+
+      - name: Binary Smoke Test (Startup Verification)
+        shell: powershell
+        run: |
+          python -c "import subprocess, time; p = subprocess.Popen(['dist\\main.exe']); time.sleep(3); poll = p.poll(); assert poll is None, f'Binary crashed on launch: {poll}'; p.terminate(); print('Smoke test PASS!')"
+
+      - name: Verify Binary Size Guard (< 85 MB)
+        shell: powershell
+        run: |
+          $sizeMb = (Get-Item dist\main.exe).Length / 1MB
+          Write-Host "Output EXE Size: $([math]::Round($sizeMb, 2)) MB"
+          if ($sizeMb -gt 85) {
+            Write-Error "EXE size exceeded 85MB threshold! Check for leaked dependencies."
+            exit 1
+          }
+
+      - name: Prepare Release Asset & Checksums
+        shell: powershell
+        run: |
+          $ver = "${{ github.ref_name }}"
+          $assetName = "WatermarkCleaner-$ver-Windows-x64.exe"
+          Move-Item -Path "dist\main.exe" -Destination "dist\$assetName"
+          $hash = (Get-FileHash -Path "dist\$assetName" -Algorithm SHA256).Hash
+          Set-Content -Path "dist\$assetName.sha256" -Value "$hash *$assetName"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/WatermarkCleaner-*-Windows-x64.exe
+            dist/WatermarkCleaner-*-Windows-x64.exe.sha256
+          generate_release_notes: true
+          draft: false
+          prerelease: false
