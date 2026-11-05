@@ -364,7 +364,7 @@ class WatermarkApp(ctk.CTk):
             
         ctk.CTkLabel(main_frame, text="Watermark Detector & Cleaner", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=2)
         ctk.CTkLabel(main_frame, text="Author: Andrew Wang Dev", text_color="gray").pack(pady=2)
-        ctk.CTkLabel(main_frame, text="Detect and Remove hidden watermark in the screenshot && Randomize fingerprint to avoid tracking.", wraplength=500).pack(pady=(10, 15))
+        ctk.CTkLabel(main_frame, text="Digital image steganalysis and privacy preservation utility. Detect and neutralize imperceptible digital watermarks across spatial and frequency domains.", wraplength=500).pack(pady=(10, 15))
         
         links_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         links_frame.pack(pady=5)

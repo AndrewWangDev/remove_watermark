@@ -9,7 +9,8 @@
   </p>
 </div>
 
-Detect and Remove hidden watermark in the screenshot && Randomize fingerprint to avoid tracking. 100% offline.
+Detect and sanitize imperceptible digital watermarks and steganographic payloads across spatial and frequency domains. 100% offline & local processing.  
+检测并脱敏图像中的隐形数字暗水印与频域载荷，中和微观特征。100% 纯本地离线处理。
 
 ![Screenshot](Screenshot.png)
 
@@ -22,7 +23,7 @@ Detect and Remove hidden watermark in the screenshot && Randomize fingerprint to
 - **Adaptive Clearance Modes**: `Aggressive` (maximum removal), `Balanced` (recommended), `Conservative` (quality preservation).
 - **Privacy Engine**: 
   - `Rand Name`: Hashes the output file with a random 9-character string.
-  - `Rand Size`: Invokes a micro-crop (±2px) imperceptible to the human eye to destroy resolution-based tracking.
+  - `Rand Size`: Invokes an imperceptible micro-crop (±2px) to neutralize resolution-dependent fingerprinting.
   - `Force JPEG`: Compresses lossless images to strip container-level steganography.
 
 ## 🛠️ Usage
@@ -59,7 +60,7 @@ Conclusion: The image is clean / unlikely to be watermarked (0% probability).
 
 ## 🧠 Core Algorithm Architecture
 
-This application employs a dual-domain analysis to expose and destroy steganographic artifacts:
+This application employs a dual-domain analysis to detect and sanitize steganographic artifacts:
 
 ```text
     [ Original Suspicious Image ]
@@ -89,3 +90,12 @@ This application employs a dual-domain analysis to expose and destroy steganogra
 - **Backend Algorithms**: OpenCV (`cv2`), Numpy, PyWavelets, Scipy
 - **Frontend Engine**: CustomTkinter (Tkinter Wrapper)
 - **Packaging**: PyInstaller + PIL (Dynamic Logo Generation)
+
+## ⚖️ Disclaimer & Educational Purpose
+
+This software is developed strictly for **academic research, digital image forensics, and privacy preservation (PETs)**.
+
+- It demonstrates mathematical signal-filtering methodologies (Fourier, Cosine, Wavelet, and Spatial LSB analyses) and evaluates the robustness of digital steganography schemes.
+- The authors and maintainers do **NOT** condone, support, or encourage the use of this tool to bypass lawful corporate security controls, violate Non-Disclosure Agreements (NDAs), infringe intellectual property rights, or commit unauthorized data exfiltration.
+- Users are solely responsible for ensuring that their use of this software complies with all applicable local laws, organizational confidentiality policies, and terms of service.
+
