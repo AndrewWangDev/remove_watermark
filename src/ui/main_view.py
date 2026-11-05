@@ -24,6 +24,26 @@ def get_resource_path(relative_path: str) -> str:
         return candidate
     return relative_path
 
+def get_detection_level(method: str, score: float, detected: bool):
+    """Multi-tier grading: Clean (green) / Suspicious (yellow) / Found (red)."""
+    if method == "LSB":
+        if score >= 0.490: return "error", "Found"
+        if score >= 0.460 or detected: return "warning", "Suspicious"
+        return "success", "Clean"
+    elif method == "FFT":
+        if score >= 45.0: return "error", "Found"
+        if score >= 18.0 or detected: return "warning", "Suspicious"
+        return "success", "Clean"
+    elif method == "DCT":
+        if (detected and score >= 450.0) or score >= 800.0: return "error", "Found"
+        if score >= 200.0 or detected: return "warning", "Suspicious"
+        return "success", "Clean"
+    elif method == "DWT":
+        if score >= 250.0: return "error", "Found"
+        if score >= 80.0 or detected: return "warning", "Suspicious"
+        return "success", "Clean"
+    return ("error", "Found") if detected else ("success", "Clean")
+
 class WatermarkApp(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -602,24 +622,7 @@ class WatermarkApp(ctk.CTk):
         self.log_box.insert("end", "\n")
 
         # Multi-tier grading: Clean (green) / Suspicious (yellow) / Found (red)
-        def get_lvl(method, score, detected):
-            if method == "LSB":
-                if score >= 0.490: return "error", "Found"
-                if score >= 0.460 or detected: return "warning", "Suspicious"
-                return "success", "Clean"
-            elif method == "FFT":
-                if score >= 45.0: return "error", "Found"
-                if score >= 18.0 or detected: return "warning", "Suspicious"
-                return "success", "Clean"
-            elif method == "DCT":
-                if score >= 1200.0: return "error", "Found"
-                if score >= 600.0 or detected: return "warning", "Suspicious"
-                return "success", "Clean"
-            elif method == "DWT":
-                if score >= 250.0: return "error", "Found"
-                if score >= 80.0 or detected: return "warning", "Suspicious"
-                return "success", "Clean"
-            return ("error", "Found") if detected else ("success", "Clean")
+        get_lvl = get_detection_level
 
         # Row 2: Scores
         self.log_box.insert("end", f"{'Score:':<12}| ")

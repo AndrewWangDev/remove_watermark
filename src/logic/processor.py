@@ -68,7 +68,7 @@ class WatermarkProcessor:
         action: str, 
         color_preserve: bool, 
         aggressiveness: str, 
-        output_path: str, 
+        output_path: str = "", 
         cancel_check=None, 
         rand_name=False, 
         rand_size=False, 
@@ -135,12 +135,32 @@ class WatermarkProcessor:
                     if not fn:
                         continue
 
-                    det_res = fn(current_channel, aggressiveness, "detect", cancel_check=cancel_check)
-                    if m_name == "LSB" and alpha_channel is not None:
-                        alpha_res = fn(alpha_channel, aggressiveness, "detect", cancel_check=cancel_check)
-                        if alpha_res.get("detected"):
-                            det_res["detected"] = True
-                            det_res["score"] = max(det_res.get("score", 0.0), alpha_res.get("score", 0.0))
+                    if m_name == "LSB":
+                        # LSB analyzes native image color channels (B, G, R, and Alpha)
+                        # to catch single-channel steganographic payloads (e.g. Blue channel only)
+                        channels_to_test = []
+                        if len(bgr_img.shape) == 3 and bgr_img.shape[2] == 3:
+                            channels_to_test.extend([bgr_img[:, :, 0], bgr_img[:, :, 1], bgr_img[:, :, 2]])
+                        else:
+                            channels_to_test.append(current_channel)
+
+                        if alpha_channel is not None:
+                            channels_to_test.append(alpha_channel)
+
+                        best_detected = False
+                        max_score = 0.0
+                        for ch_data in channels_to_test:
+                            if cancel_check and cancel_check():
+                                return "Task cancelled by user.", False
+                            ch_res = fn(ch_data, aggressiveness, "detect", cancel_check=cancel_check)
+                            if ch_res and ch_res.get("detected"):
+                                best_detected = True
+                            if ch_res:
+                                max_score = max(max_score, ch_res.get("score", 0.0))
+
+                        det_res = {"detected": bool(best_detected), "score": float(round(max_score, 4))}
+                    else:
+                        det_res = fn(current_channel, aggressiveness, "detect", cancel_check=cancel_check)
                     results[m_name] = det_res
 
                 _report(100, "Detection complete")

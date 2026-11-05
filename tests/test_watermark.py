@@ -15,7 +15,7 @@ from src.logic.algorithms import (
 from src.logic.processor import (
     WatermarkProcessor, blend_alpha_to_bgr, imwrite_unicode, imread_unicode
 )
-from src.ui.main_view import get_resource_path
+from src.ui.main_view import get_resource_path, get_detection_level
 
 def _make_dummy_image(h, w, c=3):
     rng = random.Random(42)
@@ -128,6 +128,61 @@ def test_dwt_text_protection():
     assert min_val < 30, "Text strokes were severely washed out by DWT soft thresholding!"
     print("OK: DWT text strokes remain sharp and dark without excessive blur.")
 
+def test_dct_ui_grading_thresholds():
+    print("\n--- 7. Testing DCT UI Multi-Tier Grading Thresholds ---")
+    # Clean image: score ~73.18, detected=False
+    lvl_clean, label_clean = get_detection_level("DCT", 73.18, False)
+    assert label_clean == "Clean" and lvl_clean == "success", f"Clean DCT graded as {label_clean}"
+
+    # Watermarked image: score ~567.16, detected=True -> must be Found (red)!
+    lvl_found, label_found = get_detection_level("DCT", 567.16, True)
+    assert label_found == "Found" and lvl_found == "error", f"Watermarked DCT falsely graded as {label_found}"
+
+    # Intermediate/subtle: score ~300.0, detected=False -> Suspicious (yellow)
+    lvl_susp, label_susp = get_detection_level("DCT", 300.0, False)
+    assert label_susp == "Suspicious" and lvl_susp == "warning", f"Subtle DCT graded as {label_susp}"
+    print("OK: DCT UI multi-tier grading correctly maps scores to Clean, Suspicious, and Found.")
+
+def test_single_channel_lsb_detection():
+    print("\n--- 8. Testing Single-Channel LSB Steganography Detection ---")
+    test_dir = os.path.join(repo_root, "test_lsb_tmp")
+    os.makedirs(test_dir, exist_ok=True)
+    test_in = os.path.join(test_dir, "lsb_single_channel.png")
+
+    # Create smooth 3-channel image (logo.png if available, else synthetic smooth gradient)
+    logo_path = get_resource_path("logo.png")
+    if os.path.exists(logo_path):
+        base_img = imread_unicode(logo_path)
+    else:
+        y, x = np.mgrid[0:256, 0:256]
+        base_ch = ((x + y) // 2).astype(np.uint8)
+        base_img = cv2.merge([base_ch, base_ch, base_ch])
+
+    # Inject LSB payload ONLY into the Blue channel (B in BGR), keeping G and R pristine
+    wm_img = base_img.copy()
+    rng = random.Random(999)
+    h, w = wm_img.shape[:2]
+    payload = np.array([rng.randint(0, 1) for _ in range(h * w)], dtype=np.uint8).reshape((h, w))
+    wm_img[:, :, 0] = (wm_img[:, :, 0] & 0xFE) | payload
+    imwrite_unicode(test_in, wm_img)
+
+    processor = WatermarkProcessor()
+    res, ok = processor.process_image(
+        image_path=test_in,
+        methods=["LSB"],
+        action="detect",
+        color_preserve=True,
+        aggressiveness="Balanced"
+    )
+    assert ok, f"Detection failed: {res}"
+    lsb_res = res["LSB"]
+    print("Single-channel LSB detection result:", lsb_res)
+    assert lsb_res["detected"] == True, "Single-channel Blue LSB steganography was missed!"
+    assert lsb_res["score"] >= 0.49, f"Single-channel LSB score {lsb_res['score']} below threshold!"
+
+    shutil.rmtree(test_dir)
+    print("OK: Single-channel LSB steganography successfully detected across independent channels.")
+
 if __name__ == "__main__":
     test_resource_path()
     test_alpha_blending()
@@ -135,6 +190,8 @@ if __name__ == "__main__":
     test_fft_notch_depth()
     test_dct_detection_and_deblocking()
     test_dwt_text_protection()
+    test_dct_ui_grading_thresholds()
+    test_single_channel_lsb_detection()
     print("\n=========================================")
-    print("ALL 6 COMPREHENSIVE AUDIT TESTS PASSED!")
+    print("ALL 8 COMPREHENSIVE AUDIT TESTS PASSED!")
     print("=========================================")
