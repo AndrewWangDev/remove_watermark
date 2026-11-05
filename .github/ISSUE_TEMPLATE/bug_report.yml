@@ -1,0 +1,55 @@
+name: Bug Report
+description: Report an issue or unexpected behavior in remove_watermark
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug! Please fill out the form below to help us troubleshoot and fix the issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Detailed steps to reproduce the behavior.
+      placeholder: |
+        1. Open application
+        2. Load image '...'
+        3. Select method '...' and mode '...'
+        4. Click '...'
+        5. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear description of what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Traceback & Logs
+      description: Paste any error messages, terminal logs, or stack traces here.
+      render: shell
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment Info
+      description: Operating System, Python version, etc.
+      placeholder: "Windows 11 / Ubuntu 22.04 / Python 3.11"
+    validations:
+      required: true
