@@ -10,6 +10,9 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   test-matrix:
     name: Test Python ${{ matrix.python-version }} on ${{ matrix.os }}
